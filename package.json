@@ -1,0 +1,44 @@
+{
+  "name": "@astris/model",
+  "version": "0.1.0",
+  "description": "Astris HR — workforce matching, retention forecasting, and labor-market statistics. Industry-anchored composite scoring, pure-JS gradient-boosted decision trees, logistic regression, and a multilayer perceptron.",
+  "license": "MIT",
+  "private": false,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./matcher": "./dist/matcher/index.js",
+    "./labor-stats": "./dist/labor-stats/index.js",
+    "./training": "./dist/training/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "workforce-matching",
+    "retention",
+    "skills-graph",
+    "labor-statistics",
+    "bls",
+    "census",
+    "logistic-regression",
+    "gbdt",
+    "mlp",
+    "ensemble"
+  ]
+}
