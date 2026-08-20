@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { scoreMatch } from "../src/matcher/scoring.ts";
-import { computeCounterfactual } from "../src/matcher/counterfactual.ts";
+import { computeCounterfactual, formatMonths } from "../src/matcher/counterfactual.ts";
 import { industryAdjustedRetention, __INDUSTRIES } from "../src/labor-stats/industry-turnover.ts";
+import { __WAGE_ROWS } from "../src/labor-stats/wage-tables.ts";
 import type { ScoredCandidate, ScoredJob } from "../src/matcher/types.ts";
 
 /* ── AST-1: scoreMatch must not throw on a job missing optional arrays ── */
@@ -60,6 +61,28 @@ test("AST-4: a '1 day' certificate gap yields a non-null monthsToReady", () => {
   });
   assert.notEqual(cf.monthsToReady, null);
   assert.ok(cf.parsedGaps[0].months && cf.parsedGaps[0].months.max > 0);
+});
+
+/* ── formatMonths must render ranges cleanly (was e.g. "1 months–3") ── */
+test("formatMonths renders ranges with a single trailing unit", () => {
+  assert.equal(formatMonths({ min: 6, max: 6 }), "6 months");
+  assert.equal(formatMonths({ min: 1, max: 1 }), "1 month");
+  assert.equal(formatMonths({ min: 1, max: 3 }), "1–3 months");
+  assert.equal(formatMonths({ min: 12, max: 24 }), "1–2 years");
+  // no malformed output: never a bare number after the dash, never a doubled unit
+  for (const r of [{ min: 1, max: 3 }, { min: 0.25, max: 0.5 }, { min: 0.5, max: 2 }, { min: 12, max: 24 }]) {
+    const s = formatMonths(r);
+    assert.doesNotMatch(s, /–\d+(\.\d+)?$/, `"${s}" ends in a bare number`);
+    assert.doesNotMatch(s, /(week|month|year)s?\s+(week|month|year)/, `"${s}" has a doubled unit`);
+  }
+});
+
+/* ── SOC codes must be unique so the live wage cache can't cross-contaminate ── */
+test("wage table has no duplicate SOC codes", () => {
+  const seen = new Map<string, string[]>();
+  for (const r of __WAGE_ROWS) seen.set(r.soc, (seen.get(r.soc) ?? []).concat(r.title));
+  const dups = [...seen].filter(([, titles]) => titles.length > 1);
+  assert.deepEqual(dups, [], `duplicate SOCs: ${dups.map(([s]) => s).join(", ")}`);
 });
 
 /* ── AST-2: retention must carry positive signal and never saturate ── */
