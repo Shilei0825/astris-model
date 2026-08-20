@@ -169,10 +169,17 @@ function convertToMonths(n: number, unit: string): number {
   return n;
 }
 
-/** Format a months range for display. */
+/** Format a months range for display, e.g. "1–3 months", "2–4 weeks",
+ *  "3 weeks–2 months". Collapses to a single unit when both endpoints
+ *  share it, and drops the redundant number when min === max. */
 export function formatMonths(r: { min: number; max: number }): string {
   if (r.min === r.max) return monthsLabel(r.min);
-  return `${monthsLabel(r.min)}–${monthsLabel(r.max).replace(/\s*(months?|weeks?)$/, "")}`.trim() + (r.max >= 12 ? " months" : "");
+  const lo = monthsLabel(r.min);
+  const hi = monthsLabel(r.max);
+  const unitBase = (s: string) => (s.match(/[a-z]+$/i)?.[0] ?? "").replace(/s$/, "");
+  const numberPart = (s: string) => s.replace(/\s*[a-z]+$/i, "");
+  // Same unit on both ends → "1–3 months"; different units → "3 weeks–2 months".
+  return unitBase(lo) === unitBase(hi) ? `${numberPart(lo)}–${hi}` : `${lo}–${hi}`;
 }
 
 function monthsLabel(m: number): string {
@@ -185,5 +192,6 @@ function monthsLabel(m: number): string {
     return `${y} ${y === 1 ? "year" : "years"}`;
   }
   const r = Math.round(m * 10) / 10;
-  return `${r % 1 === 0 ? r.toFixed(0) : r.toFixed(1)} months`;
+  const num = r % 1 === 0 ? r.toFixed(0) : r.toFixed(1);
+  return `${num} ${r === 1 ? "month" : "months"}`;
 }
