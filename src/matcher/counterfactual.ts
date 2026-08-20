@@ -143,14 +143,14 @@ function parseGaps(gaps: string[]): { skill: string; acquire: string; months: { 
  */
 function extractMonths(text: string): { min: number; max: number } | null {
   // Try ranges first: "1–3 months", "4–8 weeks"
-  const range = text.match(/(\d+)\s*[–-]\s*(\d+)\s*(year|month|week|hour)s?/i);
+  const range = text.match(/(\d+)\s*[–-]\s*(\d+)\s*(year|month|week|day|hour)s?/i);
   if (range) {
     const lo = parseInt(range[1], 10);
     const hi = parseInt(range[2], 10);
     const unit = range[3].toLowerCase();
     return { min: convertToMonths(lo, unit), max: convertToMonths(hi, unit) };
   }
-  const single = text.match(/(\d+)\s*(year|month|week|hour)s?/i);
+  const single = text.match(/(\d+)\s*(year|month|week|day|hour)s?/i);
   if (single) {
     const n = parseInt(single[1], 10);
     const unit = single[2].toLowerCase();
@@ -164,6 +164,7 @@ function convertToMonths(n: number, unit: string): number {
   if (unit === "year") return n * 12;
   if (unit === "month") return n;
   if (unit === "week") return Math.max(0.25, Math.round((n / 4.33) * 4) / 4);
+  if (unit === "day") return Math.max(0.25, Math.round((n / 30) * 4) / 4);
   if (unit === "hour") return Math.max(0.25, Math.round((n / 160) * 4) / 4);
   return n;
 }

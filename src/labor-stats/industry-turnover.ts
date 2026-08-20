@@ -150,17 +150,24 @@ export function turnoverForFunctionCategory(fn: string | null | undefined): Indu
  *   stability = avg(language, distance, schedule, transportation) / 100
  *   fit       = avg(skills, experience, certification)            / 100
  *
- *   adjuster_T = 0.70 + (stability * 0.50) + (fit * 0.30)
+ * The adjustment scales the monthly quit HAZARD, not the survival
+ * probability:
  *
- * The adjuster ranges [0.70, 1.50]:
- *   - 0.70 floor: a candidate with weak stability + fit retains at 70% of
- *     industry baseline (industry physics still dominate).
- *   - 1.50 ceiling: max-stability, max-fit candidate retains at 150% of
- *     baseline — typical of a strong fit overcoming an industry's
- *     average churn.
+ *   factor_T = 1.5 − (w_stability_T · stability + w_fit_T · fit)
+ *   q_adj_T  = monthly_quits_rate · factor_T
+ *   r_T      = (1 − q_adj_T) ^ T_months
  *
- * The early-window (30-day) curve weights stability more; the late-window
- * (365-day) weights fit + a small stability tail.
+ * Because the per-horizon weights sum to 1 and both features are in [0,1],
+ * factor_T ranges [0.5, 1.5]:
+ *   - a strong match lowers the quit hazard (factor → 0.5), so retention is
+ *     strictly ABOVE the industry baseline at every horizon;
+ *   - a weak match raises it (factor → 1.5), strictly BELOW baseline.
+ * Scaling the hazard (rather than the survival curve) keeps r_T strictly
+ * inside (0,1) for any finite rate — so a perfect candidate can never
+ * saturate at exactly 100%, and the baseline is never a hard ceiling.
+ *
+ * The early-window (30-day) factor weights stability more; the late-window
+ * (365-day) factor weights fit more.
  */
 export function industryAdjustedRetention(args: {
   industry: IndustryTurnover;
@@ -176,21 +183,20 @@ export function industryAdjustedRetention(args: {
   const fit       = (args.skillsScore + args.experienceScore + args.certificationScore) / 3 / 100;
 
   const q = args.industry.monthlyQuitsRate;
-  const base30  = Math.pow(1 - q, 1);
-  const base90  = Math.pow(1 - q, 3);
-  const base180 = Math.pow(1 - q, 6);
-  const base365 = Math.pow(1 - q, 12);
 
-  const adj30  = clamp01(0.85 + stability * 0.30 + fit * 0.10);  // first month: stability-dominated
-  const adj90  = clamp01(0.75 + stability * 0.40 + fit * 0.20);
-  const adj180 = clamp01(0.70 + stability * 0.40 + fit * 0.30);
-  const adj365 = clamp01(0.70 + stability * 0.30 + fit * 0.40);  // long horizon: fit-dominated
+  // Per-horizon hazard factor in [0.5, 1.5]. Weights (stability, fit) sum
+  // to 1 at each horizon: stability dominates early, fit dominates late.
+  const factor = (wStab: number, wFit: number) => 1.5 - (wStab * stability + wFit * fit);
+  const q30  = q * factor(0.70, 0.30);
+  const q90  = q * factor(0.60, 0.40);
+  const q180 = q * factor(0.45, 0.55);
+  const q365 = q * factor(0.30, 0.70);
 
   return {
-    r30:  clamp01(base30  * adj30),
-    r90:  clamp01(base90  * adj90),
-    r180: clamp01(base180 * adj180),
-    r365: clamp01(base365 * adj365),
+    r30:  clamp01(Math.pow(1 - q30,  1)),
+    r90:  clamp01(Math.pow(1 - q90,  3)),
+    r180: clamp01(Math.pow(1 - q180, 6)),
+    r365: clamp01(Math.pow(1 - q365, 12)),
     industry: args.industry,
   };
 }
