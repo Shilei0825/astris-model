@@ -19,10 +19,6 @@
  * Each component returns a 0-100 score; the overall is the weighted
  * average, clamped by the coverage cap = 40 + (matched_skills /
  * total_required_skills) × 60.
- *
- * The companion ensemble (src/matcher/ensemble.ts) adds an embedding
- * similarity sub-model and an industry-anchored retention forecast,
- * weighted into the composite by the model registry.
  */
 
 import type { ScoredCandidate, ScoredJob, MatchResult, ScoreOptions, ComponentScores } from "./types";
@@ -125,7 +121,7 @@ export function scoreMatch(
 
   // Pick industry-specific component weights — a driver job emphasizes
   // transport + license; an analyst job emphasizes skills + language.
-  const { weights } = weightsForJob(j, j.skills.filter((s) => s.isRequired).map((s) => s.skill.name));
+  const { weights, jobFunction } = weightsForJob(j, j.skills.filter((s) => s.isRequired).map((s) => s.skill.name));
 
   const baseOverall =
     skillsScore * weights.skills +
@@ -171,6 +167,10 @@ export function scoreMatch(
     recommendation: recommendationFor(overall),
     gaps: collectGaps(c, j, { skillsScore, certificationScore, languageScore, distanceScore, coverage, coverageMatched, coverageTotal }, opts.skillGraph, transferableSkills),
     transferableSkills,
+    coverage,
+    coverageMatched,
+    coverageTotal,
+    jobFunction,
   };
 }
 
@@ -492,7 +492,7 @@ const JOB_TITLE_RULES: { match: RegExp; func: JobFunction }[] = [
   { match: /\bnanny|childcare|eldercare|caregiver|home health/i, func: "caregiving" },
 ];
 
-function inferJobFunction(title: string | null, description: string | null, requiredSkillNames: string[]): JobFunction | null {
+function inferJobFunction(title: string | null | undefined, description: string | null | undefined, requiredSkillNames: string[]): JobFunction | null {
   const text = `${title ?? ""} ${(description ?? "").slice(0, 600)}`.toLowerCase();
   // 1. Title / description keyword match wins first.
   for (const rule of JOB_TITLE_RULES) {
@@ -605,17 +605,38 @@ function applyExperienceDecay(rawYears: number, c: ScoredCandidate): number {
   return rawYears * 0.50;
 }
 
+/** Ordered proficiency ladder — index is the rank used for comparisons. */
+const PROFICIENCY_RANK: Record<string, number> = {
+  none: 0, basic: 1, conversational: 2, fluent: 3, native: 4,
+};
+
+function proficiencyRank(p: string | null | undefined): number {
+  if (!p) return 0;
+  return PROFICIENCY_RANK[p.toLowerCase()] ?? 0;
+}
+
 function scoreLanguages(c: ScoredCandidate, j: ScoredJob): number {
   const required = (j.requiredLanguages as unknown as { language: string; proficiency?: string }[]) ?? [];
   if (required.length === 0) return 100;
   const candidateLangs = new Map(
     c.languages.map((l) => [l.language.toLowerCase(), l.proficiency])
   );
-  let hits = 0;
+  // Per-language credit that respects proficiency (README: "Required vs.
+  // spoken with proficiency levels"). A job that doesn't state a required
+  // proficiency only needs the language present (any level ≥ basic). When
+  // it does state one, meeting-or-exceeding earns full credit, one level
+  // short earns partial, absent earns none. Averaged across required langs.
+  let total = 0;
   for (const r of required) {
-    if (candidateLangs.has(r.language.toLowerCase())) hits++;
+    const held = candidateLangs.get(r.language.toLowerCase());
+    if (held === undefined) continue; // candidate doesn't speak it at all
+    const heldRank = proficiencyRank(held);
+    const needRank = r.proficiency ? proficiencyRank(r.proficiency) : 1; // default: basic presence
+    if (heldRank >= needRank) total += 1;
+    else if (heldRank >= needRank - 1 && heldRank > 0) total += 0.6; // one step short
+    // else: no meaningful credit
   }
-  return clamp((hits / required.length) * 100, 0, 100);
+  return clamp((total / required.length) * 100, 0, 100);
 }
 
 function scoreDistance(c: ScoredCandidate, j: ScoredJob): number {
@@ -634,16 +655,18 @@ function scoreDistance(c: ScoredCandidate, j: ScoredJob): number {
 }
 
 function scoreSchedule(c: ScoredCandidate, j: ScoredJob): number {
-  const overlapAvail = arrayOverlap(c.availabilityType, j.availabilityType);
-  const overlapShift = arrayOverlap(c.shiftAvailability, j.shifts);
-  if (j.availabilityType.length === 0 && j.shifts.length === 0) return 80;
+  const jobAvail = j.availabilityType ?? [];
+  const jobShifts = j.shifts ?? [];
+  const overlapAvail = arrayOverlap(c.availabilityType, jobAvail);
+  const overlapShift = arrayOverlap(c.shiftAvailability, jobShifts);
+  if (jobAvail.length === 0 && jobShifts.length === 0) return 80;
   let score = 0;
-  if (j.availabilityType.length > 0) {
+  if (jobAvail.length > 0) {
     score += overlapAvail ? 50 : 0;
   } else {
     score += 50;
   }
-  if (j.shifts.length > 0) {
+  if (jobShifts.length > 0) {
     score += overlapShift ? 50 : 0;
   } else {
     score += 50;
@@ -652,25 +675,27 @@ function scoreSchedule(c: ScoredCandidate, j: ScoredJob): number {
 }
 
 function scoreCertifications(c: ScoredCandidate, j: ScoredJob): number {
-  if (j.requiredCertifications.length === 0) return 100;
+  const requiredCerts = j.requiredCertifications ?? [];
+  if (requiredCerts.length === 0) return 100;
   const cset = new Set(
     c.skills
       .filter((s) => s.skill.type === "certification")
       .map((s) => s.skill.name.toLowerCase())
   );
-  const have = j.requiredCertifications.filter((r) => cset.has(r.toLowerCase())).length;
-  return clamp((have / j.requiredCertifications.length) * 100, 0, 100);
+  const have = requiredCerts.filter((r) => cset.has(r.toLowerCase())).length;
+  return clamp((have / requiredCerts.length) * 100, 0, 100);
 }
 
 function scoreTransportation(c: ScoredCandidate, j: ScoredJob): number {
+  const transport = c.transportationTypes ?? [];
   if (!j.transportationRequired) {
     if (j.transitAccessible) return 100;
-    return c.transportationTypes.length > 0 ? 90 : 70;
+    return transport.length > 0 ? 90 : 70;
   }
   // Job requires transportation
-  if (c.transportationTypes.includes("own_vehicle") && c.hasDriversLicense) return 100;
-  if (c.transportationTypes.includes("carpool") || c.transportationTypes.includes("rideshare")) return 70;
-  if (j.transitAccessible && c.transportationTypes.includes("public_transit")) return 80;
+  if (transport.includes("own_vehicle") && c.hasDriversLicense) return 100;
+  if (transport.includes("carpool") || transport.includes("rideshare")) return 70;
+  if (j.transitAccessible && transport.includes("public_transit")) return 80;
   return 30;
 }
 
@@ -722,9 +747,9 @@ function collectGaps(
     }
   }
 
-  if ((scores.certificationScore ?? 100) < 100 && j.requiredCertifications.length) {
+  if ((scores.certificationScore ?? 100) < 100 && (j.requiredCertifications?.length ?? 0)) {
     const cset = new Set(c.skills.filter((s) => s.skill.type === "certification").map((s) => s.skill.name));
-    const missing = j.requiredCertifications.filter((r) => !cset.has(r));
+    const missing = (j.requiredCertifications ?? []).filter((r) => !cset.has(r));
     if (missing.length) {
       const detail = missing.map((n) => `${n} — ${acquireSuggestion(n)}`).join("; ");
       gaps.push(`Missing certifications: ${detail}`);
@@ -848,7 +873,8 @@ function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number):
   return R * c;
 }
 
-function arrayOverlap<T>(a: T[], b: T[]): boolean {
+function arrayOverlap<T>(a: T[] | null | undefined, b: T[] | null | undefined): boolean {
+  if (!a || !b) return false;
   const s = new Set(a);
   return b.some((x) => s.has(x));
 }
